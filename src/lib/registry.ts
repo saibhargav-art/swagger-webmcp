@@ -9,15 +9,8 @@ import type {
 import { parseSpec } from './parser.js';
 import { transformSpec } from './transformer.js';
 
-// ─── Internal Registry State ──────────────────────────────────────────────────
-// Single source of truth for what tools are currently registered.
-// Key = tool name, Value = the full tool definition.
 const _registeredTools = new Map<string, WebMCPToolDefinition>();
-
-// Tracks which tag-scope is currently active so we can skip no-op swaps.
-// e.g. 'users' | 'posts' | null (when all tools registered or none)
 let _activeScope: string | null = null;
-// ─────────────────────────────────────────────────────────────────────────────
 
 function injectJsonLdFallback(tools: WebMCPToolDefinition[]): void {
   if (typeof document === 'undefined') return;
@@ -25,7 +18,6 @@ function injectJsonLdFallback(tools: WebMCPToolDefinition[]): void {
   const existingScript = document.querySelector('script[data-swagger-webmcp-jsonld]');
   if (existingScript) existingScript.remove();
 
-  // If no tools remain, remove the script entirely and stop.
   if (tools.length === 0) return;
 
   const jsonLd = {
@@ -50,37 +42,58 @@ function isModelContextAvailable(): boolean {
   return typeof navigator !== 'undefined' && 'modelContext' in navigator;
 }
 
-// Re-syncs the JSON-LD fallback to whatever is currently in _registeredTools.
-// Always call this after any add/remove to keep <head> in sync.
 function syncJsonLd(): void {
   injectJsonLdFallback([..._registeredTools.values()]);
 }
 
+function isDuplicateToolError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.toLowerCase().includes('duplicate');
+}
+
 async function _registerSingleTool(tool: MCPToolWithExecute): Promise<void> {
-  if (isModelContextAvailable()) {
-    const nav = navigator as Navigator & {
-      modelContext: {
-        registerTool: (tool: MCPToolWithExecute) => Promise<void>;
-      };
+  if (!isModelContextAvailable()) return;
+
+  const nav = navigator as Navigator & {
+    modelContext: {
+      registerTool: (tool: MCPToolWithExecute) => Promise<void>;
     };
+  };
+
+  try {
     await nav.modelContext.registerTool(tool);
+  } catch (err: unknown) {
+    if (isDuplicateToolError(err)) {
+      console.warn(
+        `%c[swagger-webmcp] '${tool.name}' already in browser ModelContext — skipping (likely StrictMode)`,
+        'color: #f59e0b;'
+      );
+      return;
+    }
+    throw err;
   }
-  // JSON-LD sync is handled in bulk by the caller after all tools are processed.
 }
 
 async function _unregisterSingleTool(name: string): Promise<void> {
-  if (isModelContextAvailable()) {
-    const nav = navigator as Navigator & {
-      modelContext: {
-        // unregisterTool is the emerging standard — gracefully skip if absent
-        unregisterTool?: (name: string) => Promise<void>;
-      };
+  if (!isModelContextAvailable()) return;
+
+  const nav = navigator as Navigator & {
+    modelContext: {
+      unregisterTool?: (name: string) => Promise<void>;
     };
-    if (typeof nav.modelContext.unregisterTool === 'function') {
+  };
+
+  if (typeof nav.modelContext.unregisterTool === 'function') {
+    try {
       await nav.modelContext.unregisterTool(name);
+    } catch (err: unknown) {
+      console.warn(
+        `%c[swagger-webmcp] Could not unregister '${name}' from browser ModelContext — skipping`,
+        'color: #f59e0b;',
+        err
+      );
     }
   }
-  // JSON-LD sync is handled in bulk by the caller.
 }
 
 async function enrichDescriptions(
@@ -157,20 +170,11 @@ async function enrichDescriptions(
   return results;
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
 
-/**
- * Returns a snapshot of all currently registered tool names.
- * Useful for debug panels, testing, and the useRouteTools hook.
- */
 export function getRegisteredTools(): string[] {
   return [..._registeredTools.keys()];
 }
 
-/**
- * Unregisters tools by name. Silently skips names that aren't registered.
- * Updates JSON-LD in <head> to reflect the removal.
- */
 export async function unregisterSwaggerTools(names: string[]): Promise<void> {
   const toRemove = names.filter((n) => _registeredTools.has(n));
   if (toRemove.length === 0) return;
@@ -188,31 +192,16 @@ export async function unregisterSwaggerTools(names: string[]): Promise<void> {
   );
 }
 
-/**
- * Unregisters ALL currently registered tools.
- * Resets scope tracking. Clears JSON-LD from <head>.
- */
 export async function unregisterAllSwaggerTools(): Promise<void> {
   const names = [..._registeredTools.keys()];
   await unregisterSwaggerTools(names);
   _activeScope = null;
 }
 
-/**
- * Swaps the active tool scope — unregisters tools from the previous scope
- * and registers tools for the new scope in a single atomic operation.
- *
- * This is the recommended function to call on route changes.
- *
- * @param options  - Same as registerSwaggerTools. `include` tags define the new scope.
- * @param scopeKey - A stable string identifying this scope (e.g. 'users', 'posts').
- *                   If the scope hasn't changed, this is a no-op.
- */
 export async function swapToolScope(
   options: SwaggerToolsOptions,
   scopeKey: string
 ): Promise<SwaggerToolsResult> {
-  // No-op if we're already in this scope
   if (_activeScope === scopeKey) {
     console.log(
       `%c[swagger-webmcp] Scope '${scopeKey}' already active — skipping re-registration`,
@@ -221,20 +210,12 @@ export async function swapToolScope(
     return { tools: [..._registeredTools.values()], errors: [] };
   }
 
-  // Unregister everything currently registered
   await unregisterAllSwaggerTools();
 
-  // Register the new scope
   _activeScope = scopeKey;
   return registerSwaggerTools(options);
 }
 
-/**
- * Core registration function — unchanged public contract, but now with:
- * 1. Deduplication guard (skips tools already registered by name)
- * 2. Internal registry tracking
- * 3. JSON-LD sync after registration
- */
 export async function registerSwaggerTools(
   options: SwaggerToolsOptions
 ): Promise<SwaggerToolsResult> {
@@ -258,7 +239,7 @@ export async function registerSwaggerTools(
           result.tools[i].description = enriched[i];
         }
       }
-    } catch (err) {
+    } catch (err: unknown) {
       result.errors.push(
         `Enricher failed: ${err instanceof Error ? err.message : String(err)}`
       );
@@ -270,7 +251,6 @@ export async function registerSwaggerTools(
 
   for (const tool of result.tools as MCPToolWithExecute[]) {
     if (_registeredTools.has(tool.name)) {
-      // ← Dedup guard: already registered, skip silently
       skipped.push(tool.name);
       continue;
     }
@@ -280,14 +260,13 @@ export async function registerSwaggerTools(
     registered.push(tool.name);
   }
 
-  // Sync JSON-LD once after all tools are processed (not per-tool)
   if (!isModelContextAvailable()) {
     syncJsonLd();
   }
 
   if (skipped.length > 0) {
     console.log(
-      `%c[swagger-webmcp] Skipped ${skipped.length} already-registered tools: ${skipped.join(', ')}`,
+      `%c[swagger-webmcp] Skipped ${skipped.length} already-registered: ${skipped.join(', ')}`,
       'color: #f59e0b; font-weight: bold;'
     );
   }
@@ -295,10 +274,6 @@ export async function registerSwaggerTools(
   console.log(
     `%c[swagger-webmcp] Registered ${registered.length} tools`,
     'color: #10b981; font-weight: bold; font-size: 14px;'
-  );
-  console.log(
-    '%c[swagger-webmcp] Registered tools:',
-    'color: #10b981; font-weight: bold;'
   );
   result.tools.forEach((tool) => {
     console.log(`  %c${tool.name}`, 'color: #3b82f6; font-weight: bold;', {
