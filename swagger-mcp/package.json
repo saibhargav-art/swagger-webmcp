@@ -1,0 +1,48 @@
+{
+  "name": "@vikramthakur/swagger-webmcp",
+  "version": "0.2.2",
+  "description": "Register WebMCP tools from OpenAPI specs in any web app",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    },
+    "./react": {
+      "types": "./dist/adapters/react.d.ts",
+      "import": "./dist/adapters/react.mjs",
+      "require": "./dist/adapters/react.js"
+    },
+    "./vanilla": {
+      "types": "./dist/adapters/vanilla.d.ts",
+      "import": "./dist/adapters/vanilla.mjs",
+      "require": "./dist/adapters/vanilla.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup --config tsup.config.ts",
+    "dev": "tsup --config tsup.config.ts --watch",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": ["openapi", "swagger", "webmcp", "mcp", "browser", "ai", "agent"],
+  "license": "MIT",
+  "publishConfig": {
+    "registry": "https://npm.fury.io/vikramthakur/13Lwqi-hXo1VaJ9Dx8FpbFNZoTMHFEBAk/"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.0",
+    "react": "^18.2.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.3.0"
+  }
+}

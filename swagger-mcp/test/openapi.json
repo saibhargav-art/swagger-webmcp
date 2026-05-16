@@ -1,0 +1,111 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Pet Store API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "https://petstore.example.com/api/v1" }
+  ],
+  "paths": {
+    "/pets": {
+      "get": {
+        "operationId": "listPets",
+        "summary": "List all pets",
+        "description": "Returns a paginated list of pets in the store.",
+        "tags": ["pets"],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Max number of results to return",
+            "required": false,
+            "schema": { "type": "integer", "format": "int32" }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Filter by pet status",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": ["available", "pending", "sold"]
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createPet",
+        "summary": "Create a pet",
+        "tags": ["pets"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["name", "species"],
+                "properties": {
+                  "name": { "type": "string", "description": "Pet name" },
+                  "species": { "type": "string", "description": "Animal species" },
+                  "age": { "type": "integer", "description": "Age in years" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/pets/{petId}": {
+      "get": {
+        "operationId": "getPet",
+        "summary": "Get a pet by ID",
+        "tags": ["pets"],
+        "parameters": [
+          {
+            "name": "petId",
+            "in": "path",
+            "required": true,
+            "description": "The pet's unique identifier",
+            "schema": { "type": "string" }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deletePet",
+        "summary": "Delete a pet",
+        "tags": ["pets"],
+        "parameters": [
+          {
+            "name": "petId",
+            "in": "path",
+            "required": true,
+            "description": "The pet's unique identifier",
+            "schema": { "type": "string" }
+          }
+        ]
+      }
+    },
+    "/users/{userId}/orders": {
+      "get": {
+        "operationId": "getUserOrders",
+        "summary": "List orders for a user",
+        "tags": ["orders"],
+        "parameters": [
+          {
+            "name": "userId",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer" }
+          }
+        ]
+      }
+    }
+  }
+}
