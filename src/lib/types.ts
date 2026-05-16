@@ -111,3 +111,18 @@ export interface SwaggerToolsResult {
   tools: WebMCPToolDefinition[];
   errors: string[];
 }
+
+/**
+ * Defines a named scope of tools tied to specific OpenAPI tags.
+ * Pass this to swapToolScope() for route-aware registration.
+ *
+ * Example:
+ *   { key: 'users', tags: ['users', 'user-profile'] }
+ *   { key: 'posts', tags: ['posts', 'comments'] }
+ */
+export interface SwaggerToolsScope {
+  /** Stable identifier for this scope — used to skip re-registration if scope hasn't changed */
+  key: string;
+  /** OpenAPI tags whose operations should be registered in this scope */
+  tags: string[];
+}
