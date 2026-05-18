@@ -1,6 +1,6 @@
 {
-  "name": "@vikramthakur/swagger-webmcp",
-  "version": "0.2.2",
+  "name": "@bhargav/swagger-webmcp",
+  "version": "0.2.3",
   "description": "Register WebMCP tools from OpenAPI specs in any web app",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
@@ -34,7 +34,7 @@
   "keywords": ["openapi", "swagger", "webmcp", "mcp", "browser", "ai", "agent"],
   "license": "MIT",
   "publishConfig": {
-    "registry": "https://npm.fury.io/vikramthakur/13Lwqi-hXo1VaJ9Dx8FpbFNZoTMHFEBAk/"
+    "registry": "https://npm.fury.io/bhargav/"
   },
   "peerDependencies": {
     "react": ">=18.0.0"
