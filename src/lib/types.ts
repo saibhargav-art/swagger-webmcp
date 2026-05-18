@@ -111,3 +111,7 @@ export interface SwaggerToolsResult {
   tools: WebMCPToolDefinition[];
   errors: string[];
 }
+export interface SwaggerToolsScope {
+  key: string;
+  tags: string[];
+}

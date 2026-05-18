@@ -9,11 +9,16 @@ import type {
 import { parseSpec } from './parser.js';
 import { transformSpec } from './transformer.js';
 
+const _registeredTools = new Map<string, WebMCPToolDefinition>();
+let _activeScope: string | null = null;
+
 function injectJsonLdFallback(tools: WebMCPToolDefinition[]): void {
   if (typeof document === 'undefined') return;
 
   const existingScript = document.querySelector('script[data-swagger-webmcp-jsonld]');
   if (existingScript) existingScript.remove();
+
+  if (tools.length === 0) return;
 
   const jsonLd = {
     '@context': 'https://modelcontextprotocol.io/schema/2024-11/tool',
@@ -37,18 +42,57 @@ function isModelContextAvailable(): boolean {
   return typeof navigator !== 'undefined' && 'modelContext' in navigator;
 }
 
-async function registerTools(tools: MCPToolWithExecute[]): Promise<void> {
-  if (isModelContextAvailable()) {
-    const nav = navigator as Navigator & {
-      modelContext: {
-        registerTool: (tool: MCPToolWithExecute) => Promise<void>;
-      };
+function syncJsonLd(): void {
+  injectJsonLdFallback([..._registeredTools.values()]);
+}
+
+function isDuplicateToolError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.toLowerCase().includes('duplicate');
+}
+
+async function _registerSingleTool(tool: MCPToolWithExecute): Promise<void> {
+  if (!isModelContextAvailable()) return;
+
+  const nav = navigator as Navigator & {
+    modelContext: {
+      registerTool: (tool: MCPToolWithExecute) => Promise<void>;
     };
-    for (const tool of tools) {
-      await nav.modelContext.registerTool(tool);
+  };
+
+  try {
+    await nav.modelContext.registerTool(tool);
+  } catch (err: unknown) {
+    if (isDuplicateToolError(err)) {
+      console.warn(
+        `%c[swagger-webmcp] '${tool.name}' already in browser ModelContext — skipping (likely StrictMode)`,
+        'color: #f59e0b;'
+      );
+      return;
     }
-  } else {
-    injectJsonLdFallback(tools);
+    throw err;
+  }
+}
+
+async function _unregisterSingleTool(name: string): Promise<void> {
+  if (!isModelContextAvailable()) return;
+
+  const nav = navigator as Navigator & {
+    modelContext: {
+      unregisterTool?: (name: string) => Promise<void>;
+    };
+  };
+
+  if (typeof nav.modelContext.unregisterTool === 'function') {
+    try {
+      await nav.modelContext.unregisterTool(name);
+    } catch (err: unknown) {
+      console.warn(
+        `%c[swagger-webmcp] Could not unregister '${name}' from browser ModelContext — skipping`,
+        'color: #f59e0b;',
+        err
+      );
+    }
   }
 }
 
@@ -126,6 +170,52 @@ async function enrichDescriptions(
   return results;
 }
 
+
+export function getRegisteredTools(): string[] {
+  return [..._registeredTools.keys()];
+}
+
+export async function unregisterSwaggerTools(names: string[]): Promise<void> {
+  const toRemove = names.filter((n) => _registeredTools.has(n));
+  if (toRemove.length === 0) return;
+
+  for (const name of toRemove) {
+    await _unregisterSingleTool(name);
+    _registeredTools.delete(name);
+  }
+
+  syncJsonLd();
+
+  console.log(
+    `%c[swagger-webmcp] Unregistered ${toRemove.length} tools: ${toRemove.join(', ')}`,
+    'color: #ef4444; font-weight: bold;'
+  );
+}
+
+export async function unregisterAllSwaggerTools(): Promise<void> {
+  const names = [..._registeredTools.keys()];
+  await unregisterSwaggerTools(names);
+  _activeScope = null;
+}
+
+export async function swapToolScope(
+  options: SwaggerToolsOptions,
+  scopeKey: string
+): Promise<SwaggerToolsResult> {
+  if (_activeScope === scopeKey) {
+    console.log(
+      `%c[swagger-webmcp] Scope '${scopeKey}' already active — skipping re-registration`,
+      'color: #f59e0b; font-weight: bold;'
+    );
+    return { tools: [..._registeredTools.values()], errors: [] };
+  }
+
+  await unregisterAllSwaggerTools();
+
+  _activeScope = scopeKey;
+  return registerSwaggerTools(options);
+}
+
 export async function registerSwaggerTools(
   options: SwaggerToolsOptions
 ): Promise<SwaggerToolsResult> {
@@ -149,22 +239,41 @@ export async function registerSwaggerTools(
           result.tools[i].description = enriched[i];
         }
       }
-    } catch (err) {
+    } catch (err: unknown) {
       result.errors.push(
         `Enricher failed: ${err instanceof Error ? err.message : String(err)}`
       );
     }
   }
 
-  await registerTools(result.tools as MCPToolWithExecute[]);
+  const skipped: string[] = [];
+  const registered: string[] = [];
+
+  for (const tool of result.tools as MCPToolWithExecute[]) {
+    if (_registeredTools.has(tool.name)) {
+      skipped.push(tool.name);
+      continue;
+    }
+
+    await _registerSingleTool(tool);
+    _registeredTools.set(tool.name, tool);
+    registered.push(tool.name);
+  }
+
+  if (!isModelContextAvailable()) {
+    syncJsonLd();
+  }
+
+  if (skipped.length > 0) {
+    console.log(
+      `%c[swagger-webmcp] Skipped ${skipped.length} already-registered: ${skipped.join(', ')}`,
+      'color: #f59e0b; font-weight: bold;'
+    );
+  }
 
   console.log(
-    `%c[swagger-webmcp] Registered ${result.tools.length} tools`,
+    `%c[swagger-webmcp] Registered ${registered.length} tools`,
     'color: #10b981; font-weight: bold; font-size: 14px;'
-  );
-  console.log(
-    '%c[swagger-webmcp] Registered tools:',
-    'color: #10b981; font-weight: bold;'
   );
   result.tools.forEach((tool) => {
     console.log(`  %c${tool.name}`, 'color: #3b82f6; font-weight: bold;', {
