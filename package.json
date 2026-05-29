@@ -1,6 +1,6 @@
 {
   "name": "@bhargav/swagger-webmcp",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Register WebMCP tools from OpenAPI specs in any web app",
   "main": "dist/index.js",
   "module": "dist/index.mjs",
