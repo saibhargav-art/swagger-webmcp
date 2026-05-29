@@ -5,12 +5,51 @@ import type {
   SwaggerToolsResult,
   WebMCPToolDefinition,
   MCPToolWithExecute,
+  ToolRegistrationDiagnostics,
 } from './types.js';
 import { parseSpec } from './parser.js';
 import { transformSpec } from './transformer.js';
 
 const _registeredTools = new Map<string, WebMCPToolDefinition>();
 let _activeScope: string | null = null;
+let _lastDiagnostics: ToolRegistrationDiagnostics | undefined;
+
+/**
+ * Create a deterministic fingerprint of scope identity including filter options.
+ * This prevents stale scope issues when authorization/filter inputs change.
+ */
+function createScopeFingerprint(
+  scopeKey: string,
+  options?: Pick<SwaggerToolsOptions, 'allowedScopes' | 'requiredRoles' | 'scopeMode' | 'roleMode' | 'scopeRegistrationMode' | 'secureMode'>
+): string {
+  const parts = [scopeKey];
+
+  if (options?.allowedScopes?.length) {
+    parts.push(`scopes:${options.allowedScopes.sort().join(',')}`);
+  }
+
+  if (options?.requiredRoles?.length) {
+    parts.push(`roles:${options.requiredRoles.sort().join(',')}`);
+  }
+
+  if (options?.scopeMode) {
+    parts.push(`scopeMode:${options.scopeMode}`);
+  }
+
+  if (options?.roleMode) {
+    parts.push(`roleMode:${options.roleMode}`);
+  }
+
+  if (options?.scopeRegistrationMode) {
+    parts.push(`scopeRegistrationMode:${options.scopeRegistrationMode}`);
+  }
+
+  if (options?.secureMode) {
+    parts.push(`secure:${options.secureMode}`);
+  }
+
+  return parts.join('|');
+}
 
 function injectJsonLdFallback(tools: WebMCPToolDefinition[]): void {
   if (typeof document === 'undefined') return;
@@ -64,10 +103,6 @@ async function _registerSingleTool(tool: MCPToolWithExecute): Promise<void> {
     await nav.modelContext.registerTool(tool);
   } catch (err: unknown) {
     if (isDuplicateToolError(err)) {
-      console.warn(
-        `%c[swagger-webmcp] '${tool.name}' already in browser ModelContext — skipping (likely StrictMode)`,
-        'color: #f59e0b;'
-      );
       return;
     }
     throw err;
@@ -87,11 +122,7 @@ async function _unregisterSingleTool(name: string): Promise<void> {
     try {
       await nav.modelContext.unregisterTool(name);
     } catch (err: unknown) {
-      console.warn(
-        `%c[swagger-webmcp] Could not unregister '${name}' from browser ModelContext — skipping`,
-        'color: #f59e0b;',
-        err
-      );
+      // ignore unregister failures in browser model context
     }
   }
 }
@@ -175,6 +206,51 @@ export function getRegisteredTools(): string[] {
   return [..._registeredTools.keys()];
 }
 
+/**
+ * Get the last registration diagnostics.
+ * Useful for frontend to understand why certain tools aren't available.
+ */
+export function getLastDiagnostics(): ToolRegistrationDiagnostics | undefined {
+  return _lastDiagnostics;
+}
+
+/**
+ * Get availability status for tools.
+ * Returns both registered tools and detailed info about unavailable tools.
+ */
+export function getToolAvailabilityStatus(): {
+  available: string[];
+  unavailable: Array<{
+    name: string;
+    reason: string;
+    message?: string;
+  }>;
+  summary?: string;
+} {
+  const available = [..._registeredTools.keys()];
+  const unavailable: Array<{
+    name: string;
+    reason: string;
+    message?: string;
+  }> = [];
+
+  if (_lastDiagnostics?.filteredTools) {
+    unavailable.push(
+      ..._lastDiagnostics.filteredTools.map((tool) => ({
+        name: tool.name,
+        reason: tool.reason,
+        message: tool.message,
+      }))
+    );
+  }
+
+  return {
+    available,
+    unavailable,
+    summary: _lastDiagnostics?.permissionSummary,
+  };
+}
+
 export async function unregisterSwaggerTools(names: string[]): Promise<void> {
   const toRemove = names.filter((n) => _registeredTools.has(n));
   if (toRemove.length === 0) return;
@@ -185,11 +261,6 @@ export async function unregisterSwaggerTools(names: string[]): Promise<void> {
   }
 
   syncJsonLd();
-
-  console.log(
-    `%c[swagger-webmcp] Unregistered ${toRemove.length} tools: ${toRemove.join(', ')}`,
-    'color: #ef4444; font-weight: bold;'
-  );
 }
 
 export async function unregisterAllSwaggerTools(): Promise<void> {
@@ -198,21 +269,51 @@ export async function unregisterAllSwaggerTools(): Promise<void> {
   _activeScope = null;
 }
 
+export async function executeSwaggerTool(
+  name: string,
+  params: Record<string, unknown>
+): Promise<unknown> {
+  const tool = _registeredTools.get(name);
+  if (!tool) {
+    throw new Error(`Tool '${name}' is not registered.`);
+  }
+
+  if (typeof tool.execute !== 'function') {
+    throw new Error(`Tool '${name}' has no execute function.`);
+  }
+
+  return tool.execute(params);
+}
+
 export async function swapToolScope(
   options: SwaggerToolsOptions,
   scopeKey: string
 ): Promise<SwaggerToolsResult> {
-  if (_activeScope === scopeKey) {
-    console.log(
-      `%c[swagger-webmcp] Scope '${scopeKey}' already active — skipping re-registration`,
-      'color: #f59e0b; font-weight: bold;'
-    );
-    return { tools: [..._registeredTools.values()], errors: [] };
+  // Create fingerprint including filter options to prevent stale scope
+  const fingerprint = createScopeFingerprint(scopeKey, {
+    allowedScopes: options.allowedScopes,
+    requiredRoles: options.requiredRoles,
+    scopeMode: options.scopeMode,
+    roleMode: options.roleMode,
+    scopeRegistrationMode: options.scopeRegistrationMode,
+    secureMode: options.secureMode,
+  });
+
+  if (_activeScope === fingerprint) {
+    return { 
+      tools: [..._registeredTools.values()], 
+      errors: [],
+      diagnostics: {
+        registered: [..._registeredTools.keys()],
+        skipped: [],
+        filtered: 0,
+      }
+    };
   }
 
   await unregisterAllSwaggerTools();
 
-  _activeScope = scopeKey;
+  _activeScope = fingerprint;
   return registerSwaggerTools(options);
 }
 
@@ -226,6 +327,12 @@ export async function registerSwaggerTools(
     include: options.include,
     exclude: options.exclude,
     baseUrl: options.baseUrl,
+    allowedScopes: options.allowedScopes,
+    requiredRoles: options.requiredRoles,
+    scopeMode: options.scopeMode,
+    roleMode: options.roleMode,
+    scopeRegistrationMode: options.scopeRegistrationMode,
+    secureMode: options.secureMode,
   });
 
   if (options.enricher && result.tools.length > 0) {
@@ -246,41 +353,23 @@ export async function registerSwaggerTools(
     }
   }
 
-  const skipped: string[] = [];
-  const registered: string[] = [];
+  const registeredNames: string[] = [];
 
   for (const tool of result.tools as MCPToolWithExecute[]) {
     if (_registeredTools.has(tool.name)) {
-      skipped.push(tool.name);
       continue;
     }
 
     await _registerSingleTool(tool);
     _registeredTools.set(tool.name, tool);
-    registered.push(tool.name);
+    registeredNames.push(tool.name);
   }
 
   if (!isModelContextAvailable()) {
     syncJsonLd();
   }
 
-  if (skipped.length > 0) {
-    console.log(
-      `%c[swagger-webmcp] Skipped ${skipped.length} already-registered: ${skipped.join(', ')}`,
-      'color: #f59e0b; font-weight: bold;'
-    );
-  }
-
-  console.log(
-    `%c[swagger-webmcp] Registered ${registered.length} tools`,
-    'color: #10b981; font-weight: bold; font-size: 14px;'
-  );
-  result.tools.forEach((tool) => {
-    console.log(`  %c${tool.name}`, 'color: #3b82f6; font-weight: bold;', {
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-    });
-  });
+  _lastDiagnostics = result.diagnostics;
 
   return result;
 }
