@@ -121,6 +121,13 @@ function resolveOperation(
     }
   }
 
+  // Preserve OpenAPI vendor extensions like x-webmcp-scopes / x-webmcp-roles
+  for (const [key, value] of Object.entries(operation)) {
+    if (key.startsWith('x-')) {
+      (resolved as Record<string, unknown>)[key] = value;
+    }
+  }
+
   return resolved;
 }
 
