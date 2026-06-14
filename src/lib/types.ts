@@ -98,14 +98,9 @@ export interface SwaggerToolsOptions {
   exclude?: string[];
   baseUrl?: string;
   enricher?: EnricherConfig;
-  // First-class scope/role filtering
-  allowedScopes?: string[];
-  requiredRoles?: string[];
-  scopeMode?: 'all' | 'any'; // 'all' = user must have all scopes, 'any' = user can have any scope
-  roleMode?: 'all' | 'any'; // 'all' = tool requires all roles, 'any' = tool requires any role
-  scopeRegistrationMode?: 'discovery' | 'filtered';
-  // Secure mode: default-deny (require explicit scope/role) vs default-allow
-  secureMode?: boolean; // if true, tools without declared scopes/roles are skipped
+  // Secure mode only: if true, tools without declared x-webmcp-scopes/x-webmcp-roles are skipped
+  // Authorization is validated at EXECUTION time, not registration time
+  secureMode?: boolean;
 }
 
 export interface WebMCPInputSchema {
@@ -119,7 +114,7 @@ export interface WebMCPToolDefinition {
   name: string;
   description: string;
   inputSchema: WebMCPInputSchema;
-  execute?: (params: Record<string, unknown>) => Promise<unknown>;
+  execute?: (params: Record<string, unknown>, invocationContext?: InvocationContext) => Promise<unknown>;
   securityMetadata?: {
     authorized: boolean;
     reason?: string;
@@ -131,8 +126,18 @@ export interface WebMCPToolDefinition {
 }
 
 export type MCPToolWithExecute = WebMCPToolDefinition & {
-  execute: (params: Record<string, unknown>) => Promise<unknown>;
+  execute: (params: Record<string, unknown>, invocationContext?: InvocationContext) => Promise<unknown>;
 };
+
+export interface InvocationContext {
+  // Optional override for auth used when performing the underlying HTTP call
+  auth?: AuthConfig;
+  // User role and computed scopes from token (set by agent runtime)
+  userRole?: string;
+  userScopes?: string[];
+  // If true, execute should only perform authorization checks and NOT call the underlying API
+  dryRun?: boolean;
+}
 
 export interface ToolSkipReason {
   toolName: string;

@@ -159,11 +159,6 @@ export function useRouteTools(
           {
             ...options,
             include: scope.tags,
-            allowedScopes: scope.allowedScopes,
-            requiredRoles: scope.requiredRoles,
-            scopeMode: scope.scopeMode,
-            roleMode: scope.roleMode,
-            scopeRegistrationMode: scope.scopeRegistrationMode,
             secureMode: scope.secureMode,
           },
           scope.key

@@ -6,6 +6,7 @@ import type {
   WebMCPToolDefinition,
   MCPToolWithExecute,
   ToolRegistrationDiagnostics,
+  InvocationContext,
 } from './types.js';
 import { parseSpec } from './parser.js';
 import { transformSpec } from './transformer.js';
@@ -13,43 +14,6 @@ import { transformSpec } from './transformer.js';
 const _registeredTools = new Map<string, WebMCPToolDefinition>();
 let _activeScope: string | null = null;
 let _lastDiagnostics: ToolRegistrationDiagnostics | undefined;
-
-/**
- * Create a deterministic fingerprint of scope identity including filter options.
- * This prevents stale scope issues when authorization/filter inputs change.
- */
-function createScopeFingerprint(
-  scopeKey: string,
-  options?: Pick<SwaggerToolsOptions, 'allowedScopes' | 'requiredRoles' | 'scopeMode' | 'roleMode' | 'scopeRegistrationMode' | 'secureMode'>
-): string {
-  const parts = [scopeKey];
-
-  if (options?.allowedScopes?.length) {
-    parts.push(`scopes:${options.allowedScopes.sort().join(',')}`);
-  }
-
-  if (options?.requiredRoles?.length) {
-    parts.push(`roles:${options.requiredRoles.sort().join(',')}`);
-  }
-
-  if (options?.scopeMode) {
-    parts.push(`scopeMode:${options.scopeMode}`);
-  }
-
-  if (options?.roleMode) {
-    parts.push(`roleMode:${options.roleMode}`);
-  }
-
-  if (options?.scopeRegistrationMode) {
-    parts.push(`scopeRegistrationMode:${options.scopeRegistrationMode}`);
-  }
-
-  if (options?.secureMode) {
-    parts.push(`secure:${options.secureMode}`);
-  }
-
-  return parts.join('|');
-}
 
 function injectJsonLdFallback(tools: WebMCPToolDefinition[]): void {
   if (typeof document === 'undefined') return;
@@ -269,9 +233,14 @@ export async function unregisterAllSwaggerTools(): Promise<void> {
   _activeScope = null;
 }
 
+export function getRegisteredToolDefinitions(): WebMCPToolDefinition[] {
+  return [..._registeredTools.values()];
+}
+
 export async function executeSwaggerTool(
   name: string,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  invocationContext?: InvocationContext
 ): Promise<unknown> {
   const tool = _registeredTools.get(name);
   if (!tool) {
@@ -282,22 +251,15 @@ export async function executeSwaggerTool(
     throw new Error(`Tool '${name}' has no execute function.`);
   }
 
-  return tool.execute(params);
+  return tool.execute(params, invocationContext);
 }
 
 export async function swapToolScope(
   options: SwaggerToolsOptions,
   scopeKey: string
 ): Promise<SwaggerToolsResult> {
-  // Create fingerprint including filter options to prevent stale scope
-  const fingerprint = createScopeFingerprint(scopeKey, {
-    allowedScopes: options.allowedScopes,
-    requiredRoles: options.requiredRoles,
-    scopeMode: options.scopeMode,
-    roleMode: options.roleMode,
-    scopeRegistrationMode: options.scopeRegistrationMode,
-    secureMode: options.secureMode,
-  });
+  // Simple scope fingerprint without auth filters (auth is now runtime-only)
+  const fingerprint = `${scopeKey}|secureMode:${options.secureMode}`;
 
   if (_activeScope === fingerprint) {
     return { 
@@ -327,11 +289,6 @@ export async function registerSwaggerTools(
     include: options.include,
     exclude: options.exclude,
     baseUrl: options.baseUrl,
-    allowedScopes: options.allowedScopes,
-    requiredRoles: options.requiredRoles,
-    scopeMode: options.scopeMode,
-    roleMode: options.roleMode,
-    scopeRegistrationMode: options.scopeRegistrationMode,
     secureMode: options.secureMode,
   });
 

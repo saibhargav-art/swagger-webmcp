@@ -8,6 +8,7 @@ import type {
   MCPToolWithExecute,
   ToolSkipReason,
   ToolRegistrationDiagnostics,
+  InvocationContext,
 } from './types.js';
 import { getAllOperations, resolveBaseUrl } from './parser.js';
 
@@ -344,8 +345,8 @@ function createExecute(
   path: string,
   method: string,
   auth?: AuthConfig
-): (params: Record<string, unknown>) => Promise<unknown> {
-  return async function execute(params: Record<string, unknown>): Promise<unknown> {
+): (params: Record<string, unknown>, invocationAuth?: AuthConfig) => Promise<unknown> {
+  return async function execute(params: Record<string, unknown>, invocationAuth?: AuthConfig): Promise<unknown> {
     const pathParams: Record<string, string> = {};
     const queryParams: Record<string, string> = {};
 
@@ -380,7 +381,8 @@ function createExecute(
           }, {} as Record<string, unknown>)
       : {};
 
-    let headers = await getAuthHeaders(auth);
+    const finalAuth = invocationAuth ?? auth;
+    let headers = await getAuthHeaders(finalAuth);
     if (Object.keys(bodyParams).length > 0) {
       headers['Content-Type'] = 'application/json';
     }
@@ -391,16 +393,16 @@ function createExecute(
       mode: 'cors',
     };
 
-    if (auth?.type === 'session') {
-      if (typeof auth.validate === 'function') {
-        const valid = await auth.validate();
+    if (finalAuth?.type === 'session') {
+      if (typeof finalAuth.validate === 'function') {
+        const valid = await finalAuth.validate();
         if (!valid) {
           throw new Error('User session is not available. Please sign in and try again.');
         }
       }
-      fetchOptions.credentials = auth.credentials ?? 'include';
-    } else if (auth) {
-      const tokenOrValue = await resolveAuthValue(auth);
+      fetchOptions.credentials = finalAuth.credentials ?? 'include';
+    } else if (finalAuth) {
+      const tokenOrValue = await resolveAuthValue(finalAuth);
       if (!tokenOrValue) {
         throw new Error('User session is not available. Please sign in and try again.');
       }
@@ -437,11 +439,7 @@ export function transformSpec(
     include?: string[];
     exclude?: string[];
     baseUrl?: string;
-    allowedScopes?: string[];
-    requiredRoles?: string[];
-    scopeMode?: 'all' | 'any';
-    roleMode?: 'all' | 'any';
-    scopeRegistrationMode?: 'discovery' | 'filtered';
+    // Secure mode only: if true, tools without declared scopes/roles are skipped at discovery
     secureMode?: boolean;
   }
 ): SwaggerToolsResult {
@@ -464,68 +462,20 @@ export function transformSpec(
     try {
       const name = generateOperationId(operation, path, method);
 
-      // Check authorization
-      const authCheck = isToolAuthorized(
-        operation,
-        options.allowedScopes,
-        options.requiredRoles,
-        options.scopeMode ?? 'any',
-        options.roleMode ?? 'any',
-        options.secureMode ?? false
-      );
-
-      const hasSecurityMetadata = Boolean(
-        operation['x-webmcp-scopes']?.length || operation['x-webmcp-roles']?.length
-      );
-      const sessionAvailable = hasSecurityMetadata ? hasAuthConfig(options.auth) : true;
-      const effectiveAuthCheck = authCheck.authorized
-        ? sessionAvailable
-          ? authCheck
-          : {
-              authorized: false,
-              skipReason: 'No authenticated session available',
-              reason: 'session_invalid' as const,
-              requiredScopes: authCheck.requiredScopes,
-              requiredRoles: authCheck.requiredRoles,
-            }
-        : authCheck;
-
-      const reason = effectiveAuthCheck.reason || 'other';
-      const permissionMessage = generatePermissionMessage(
-        name,
-        operation.summary,
-        reason === 'other' ? undefined : reason,
-        effectiveAuthCheck.requiredScopes,
-        effectiveAuthCheck.requiredRoles
-      );
-
-      if (!effectiveAuthCheck.authorized) {
-        // Track skip reason for internal diagnostics
-        diagnostics.skipped.push({
-          toolName: name,
-          operationId: operation.operationId,
-          reason: reason as any,
-          details: effectiveAuthCheck.skipReason,
-          requiredScopes: effectiveAuthCheck.requiredScopes,
-          requiredRoles: effectiveAuthCheck.requiredRoles,
-        });
-
-        // Track filtered tool for frontend display
-        if (reason !== 'other') {
-          filteredTools.push({
-            name,
+      // Check if tool should be skipped in secureMode (tools without declared scopes/roles)
+      if (options.secureMode ?? false) {
+        const toolScopes = operation['x-webmcp-scopes'];
+        const toolRoles = operation['x-webmcp-roles'];
+        if (!toolScopes && !toolRoles) {
+          diagnostics.skipped.push({
+            toolName: name,
             operationId: operation.operationId,
-            summary: operation.summary,
-            reason: reason as any,
-            requiredScopes: effectiveAuthCheck.requiredScopes,
-            requiredRoles: effectiveAuthCheck.requiredRoles,
-            message: permissionMessage,
+            reason: 'secure_mode_deny',
+            details: 'No scopes/roles declared (secure mode)',
+            requiredScopes: toolScopes,
+            requiredRoles: toolRoles,
           });
-        }
-
-        diagnostics.filtered++;
-
-        if (options.scopeRegistrationMode !== 'discovery') {
+          diagnostics.filtered++;
           continue;
         }
       }
@@ -534,20 +484,54 @@ export function transformSpec(
       const { properties, required } = buildInputSchema(operation);
 
       const securityMetadata = {
-        authorized: effectiveAuthCheck.authorized,
-        reason,
-        message: permissionMessage,
-        requiredScopes: effectiveAuthCheck.requiredScopes,
-        requiredRoles: effectiveAuthCheck.requiredRoles,
+        // Tools are always discoverable; runtime checks enforce user authorization
+        authorized: true,
+        message: '',
+        requiredScopes: operation['x-webmcp-scopes'],
+        requiredRoles: operation['x-webmcp-roles'],
         secureMode: options.secureMode ?? false,
       };
 
       const baseExecute = createExecute(baseUrl, path, method.toUpperCase(), options.auth);
-      const execute: (params: Record<string, unknown>) => Promise<unknown> = async (params) => {
-        if (!effectiveAuthCheck.authorized) {
-          throw new Error(permissionMessage);
+
+      const execute: (params: Record<string, unknown>, invocationContext?: InvocationContext) => Promise<unknown> = async (
+        params,
+        invocationContext
+      ) => {
+        // Runtime authorization checks using invocationContext with computed user scopes
+        const toolScopes = operation['x-webmcp-scopes'];
+        const toolRoles = operation['x-webmcp-roles'];
+
+        // Secure mode: deny tools without declared scopes/roles
+        if ((options.secureMode ?? false) && !toolScopes && !toolRoles) {
+          throw new Error(generatePermissionMessage(name, operation.summary, 'secure_mode_deny', toolScopes, toolRoles));
         }
-        return baseExecute(params);
+
+        // Validate scopes (always 'any' mode: user must have at least one required scope)
+        const scopeCheck = userHasRequiredScopes(toolScopes, invocationContext?.userScopes, 'any');
+        if (!scopeCheck.matches) {
+          throw new Error(generatePermissionMessage(name, operation.summary, 'insufficient_scope', toolScopes, toolRoles));
+        }
+
+        // Validate roles (always 'any' mode: user must have at least one required role)
+        const roleCheck = userHasRequiredRoles(toolRoles, invocationContext?.userRole ? [invocationContext.userRole] : undefined, 'any');
+        if (!roleCheck.matches) {
+          throw new Error(generatePermissionMessage(name, operation.summary, 'insufficient_role', toolScopes, toolRoles));
+        }
+
+        // If tool has security metadata and no auth is available, deny
+        const hasSecurityMetadata = Boolean(toolScopes?.length || toolRoles?.length);
+        if (hasSecurityMetadata && !options.auth && !invocationContext?.auth) {
+          throw new Error(generatePermissionMessage(name, operation.summary, 'session_invalid', toolScopes, toolRoles));
+        }
+
+        // If dryRun, do not call the remote API; just return an authorization result
+        if (invocationContext?.dryRun) {
+          return { authorized: true };
+        }
+
+        // Execute using invocation-time auth override if provided
+        return baseExecute(params, invocationContext?.auth);
       };
 
       const tool: MCPToolWithExecute = {
